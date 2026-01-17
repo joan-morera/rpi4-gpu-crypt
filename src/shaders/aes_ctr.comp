@@ -1,0 +1,51 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct Job {
+    uint data[16];   // 64 bytes per thread (example chunk)
+};
+
+layout(std430, binding = 0) buffer InputBuffer {
+    uint inputData[];
+};
+
+layout(std430, binding = 1) buffer OutputBuffer {
+    uint outputData[];
+};
+
+layout(push_constant) uniform PushConsts {
+    uint batchSize;
+    uint key[8]; // 256-bit key max
+    uint iv[4];
+} consts;
+
+// Shared memory for transposition
+// 64 threads * 32-bits = 2048 bits = 64 integers
+// We need to transpose 32x32 blocks or 64x64.
+// For AES bitslicing, usually we slice 128-bit blocks across 128 threads or similar.
+// Here we simplify: 64 threads working on 64 blocks of data.
+shared uint s_block[64 * 4]; // 16KB max shared memory usually available
+
+void transpose() {
+    // Placeholder for 64x64 bit matrix transpose
+    // Real implementation requires detailed bit-twiddling or SIMD extensions
+}
+
+void aes_encrypt() {
+    // Placeholder for bitsliced AES rounds
+    // AND, OR, XOR, NOT ops only
+}
+
+void main() {
+    uint gID = gl_GlobalInvocationID.x;
+    if (gID >= consts.batchSize) return;
+
+    // Load data
+    // In a real bitsliced implementation, we load 'vertically'
+    // Thread i reads Byte i of Block 0..63?
+    
+    // For now, pass-through to verify pipeline
+    outputData[gID] = inputData[gID] ^ consts.key[0]; 
+}
