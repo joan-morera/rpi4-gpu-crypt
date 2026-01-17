@@ -14,9 +14,11 @@ public:
   ~Batcher();
 
   // The main entry point for the OpenSSL Provider
+  enum Algorithm { ALG_AES_CTR = 0, ALG_CHACHA20 = 1, ALG_COUNT = 2 };
+
   // Returns true on success, false on error
   bool submit(const unsigned char *in, unsigned char *out, size_t len,
-              const unsigned char *key, const unsigned char *iv);
+              const unsigned char *key, const unsigned char *iv, Algorithm alg);
 
 private:
   VulkanContext *ctx;
@@ -40,13 +42,13 @@ private:
   void dispatchBatch();
 
   // Vulkan Objects
-  VkPipeline pipeline;
+  std::vector<VkPipeline> pipelines; // Indexed by Algorithm enum
   VkPipelineLayout pipelineLayout;
   VkDescriptorSetLayout descriptorSetLayout;
   VkDescriptorPool descriptorPool;
   VkDescriptorSet descriptorSet;
   VkCommandPool commandPool;
-  VkCommandBuffer commandBuffer;
+  std::vector<VkCommandBuffer> commandBuffers;
   VkFence computeFence;
 
   // Parameter Buffer (UBO)

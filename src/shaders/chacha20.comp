@@ -1,0 +1,200 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// Bindings
+layout(std430, binding = 0) readonly buffer InputBuffer {
+    uint data[];
+} inputBuffer;
+
+layout(std430, binding = 1) writeonly buffer OutputBuffer {
+    uint data[];
+} outputBuffer;
+
+// Params UBO (Same layout as AES for simplicity, though we interpret fields differently)
+// Params UBO (Same layout as AES for simplicity, though we interpret fields differently)
+// batchSize: Number of 64-byte blocks to process
+// key: 32 bytes (8 uints)
+// nonce: 12 bytes (3 uints) + counter (1 uint) = 16 bytes IV
+layout(std430, binding = 2) readonly buffer Params {
+    uint batchSize; // Total *16-byte* blocks? No, ChaCha uses 64-byte blocks. 
+                    // Let's interpret 'batchSize' as number of 64-byte blocks.
+    uint padding[3];
+    uint key[8];    // 256-bit Key
+    uint nonce[4];  // [0..2] = 96-bit Nonce, [3] = Initial Counter
+} params;
+
+// ChaCha20 Quarter Round
+void quarter_round(inout uint a, inout uint b, inout uint c, inout uint d) {
+    a += b; d ^= a; d = (d << 16) | (d >> 16);
+    c += d; b ^= c; b = (b << 12) | (b >> 20);
+    a += b; d ^= a; d = (d << 8)  | (d >> 24);
+    c += d; b ^= c; b = (b << 7)  | (b >> 25);
+}
+
+void main() {
+    uint gID = gl_GlobalInvocationID.x;
+    
+    // Each thread processes ONE 64-byte block (ChaCha20 State)
+    if (gID >= params.batchSize) return;
+
+    // Initialize State
+    uint state[16];
+    // Constants "expand 32-byte k"
+    state[0] = 0x61707865;
+    state[1] = 0x3320646e;
+    state[2] = 0x79622d32;
+    state[3] = 0x6b206574;
+    
+    // Key
+    state[4] = params.key[0];
+    state[5] = params.key[1];
+    state[6] = params.key[2];
+    state[7] = params.key[3];
+    state[8] = params.key[4];
+    state[9] = params.key[5];
+    state[10] = params.key[6];
+    state[11] = params.key[7];
+    
+    // Counter (Global Thread ID + Initial Counter)
+    // OpenSSL/Standard: Nonce (12B) is at nonce[0..2]
+    // Counter (4B) is at nonce[3]
+    state[12] = params.nonce[3] + gID; 
+    
+    // Nonce
+    state[13] = params.nonce[0];
+    state[14] = params.nonce[1];
+    state[15] = params.nonce[2];
+    
+    // Working state
+    uint x[16];
+    for (int i=0; i<16; i++) x[i] = state[i];
+    
+    // 20 Rounds (10 loops of 2 rounds)
+        // Round 1 (Odd)
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 2 (Even)
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 3
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 4
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 5
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 6
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 7
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 8
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 9
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 10
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+        
+        // Round 11
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 12
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 13
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 14
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 15
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 16
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 17
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 18
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+
+        // Round 19
+        quarter_round(x[0], x[4], x[8],  x[12]);
+        quarter_round(x[1], x[5], x[9],  x[13]);
+        quarter_round(x[2], x[6], x[10], x[14]);
+        quarter_round(x[3], x[7], x[11], x[15]);
+        // Round 20
+        quarter_round(x[0], x[5], x[10], x[15]);
+        quarter_round(x[1], x[6], x[11], x[12]);
+        quarter_round(x[2], x[7], x[8],  x[13]);
+        quarter_round(x[3], x[4], x[9],  x[14]);
+    
+    // Add state to working state
+    for (int i=0; i<16; i++) x[i] += state[i];
+    
+    // XOR with Input and Write Output
+    // Input/Output buffers are arrays of uints.
+    // Each block is 16 uints (64 bytes).
+    uint baseIdx = gID * 16;
+    
+    for (int i=0; i<16; i++) {
+        // Little Endian issue? 
+        // Vulkan/GLSL usually native endian. ChaCha is Little Endian.
+        // Assuming Input buffer is treated as u32 array.
+        // If CPU is also Little Endian (ARM is), this matches.
+        
+        uint inVal = inputBuffer.data[baseIdx + i];
+        outputBuffer.data[baseIdx + i] = x[i] ^ inVal;
+    }
+}

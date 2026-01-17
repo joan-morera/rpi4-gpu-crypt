@@ -8,10 +8,10 @@ extern void *vc6_init();
 extern void vc6_cleanup(void *handle);
 extern int vc6_submit_job(void *handle, const unsigned char *in,
                           unsigned char *out, size_t len,
-                          const unsigned char *key, const unsigned char *iv);
+                          const unsigned char *key, const unsigned char *iv,
+                          int alg_id);
 
 // Global backend handle for this provider instance
-// In a real provider, this should be stored in the provider context
 static void *inner_backend = NULL;
 
 typedef struct {
@@ -41,12 +41,9 @@ static int vc6_aes_init(void *vctx, const unsigned char *key, size_t keylen,
                         const unsigned char *iv, size_t ivlen,
                         const OSSL_PARAM param[]) {
   VC6_AES_CTX *ctx = (VC6_AES_CTX *)vctx;
-  /* printf("DEBUG: vc6_aes_init key=%p keylen=%zu iv=%p ivlen=%zu\n", key,
-   * keylen, iv, ivlen); */
   if (key != NULL) {
     if (keylen != 16 && keylen != 32) {
-      fprintf(stderr, "DEBUG: vc6_aes_init failed keylen=%zu\n", keylen);
-      return 0; // Only supporting 128/256 roughly
+      return 0;
     }
     memcpy(ctx->key, key, keylen);
     ctx->set_key = 1;
@@ -64,17 +61,50 @@ static int vc6_aes_final(void *vctx, unsigned char *out, size_t *outl,
   return 1;
 }
 
+// AES Key Expansion (Simple implementation or use OpenSSL's)
+// AES-128 needs 11 round keys (176 bytes).
+// We will simply use OpenSSL's AES_set_encrypt_key to get the schedule!
+#include <openssl/aes.h>
+
+// Helper to increment 128-bit counter by 'blocks'
+static void inc_128_counter(unsigned char *counter, size_t blocks) {
+  // Treat counter as Big-Endian 128-bit integer
+  for (int i = 15; i >= 0; i--) {
+    unsigned int sum = counter[i] + (blocks & 0xFF);
+    counter[i] = sum & 0xFF;
+    blocks >>= 8;
+    blocks += (sum >> 8);
+    if (blocks == 0)
+      break;
+  }
+}
+
 static int vc6_aes_cipher(void *vctx, unsigned char *out, size_t *outl,
                           size_t outsize, const unsigned char *in, size_t inl) {
   VC6_AES_CTX *ctx = (VC6_AES_CTX *)vctx;
 
-  // Just pass to backend
   if (!inner_backend)
     return 0;
 
-  vc6_submit_job(inner_backend, in, out, inl, ctx->key, ctx->iv);
-  *outl = inl;
+  // Expand Key
+  AES_KEY aes_key;
+  if (AES_set_encrypt_key(ctx->key, 128, &aes_key) < 0) {
+    return 0;
+  }
 
+  // We pass the expanded key schedule (aes_key.rd_key) to the backend
+  int res = vc6_submit_job(inner_backend, in, out, inl,
+                           (unsigned char *)aes_key.rd_key, ctx->iv, 0);
+
+  if (!res) {
+    fprintf(stderr, "[VC6-Provider] Error: vc6_submit_job failed for AES.\n");
+    return 0; // Error
+  }
+
+  // FIXED: Increment IV by number of blocks processed!
+  inc_128_counter(ctx->iv, inl / 16);
+
+  *outl = inl;
   return 1;
 }
 
@@ -83,8 +113,7 @@ static int vc6_aes_get_ctx_params(void *vctx, OSSL_PARAM params[]) {
   OSSL_PARAM *p;
 
   p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
-  if (p != NULL && !OSSL_PARAM_set_size_t(
-                       p, 32)) // Defaulting to 32 for now, should store in ctx
+  if (p != NULL && !OSSL_PARAM_set_size_t(p, 32))
     return 0;
 
   p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_IVLEN);
@@ -129,14 +158,11 @@ static int vc6_aes_set_ctx_params(void *vctx, const OSSL_PARAM params[]) {
   p = OSSL_PARAM_locate_const(params, OSSL_CIPHER_PARAM_KEYLEN);
   if (p != NULL) {
     size_t keylen;
-    if (!OSSL_PARAM_get_size_t(p, &keylen)) // Verify type
+    if (!OSSL_PARAM_get_size_t(p, &keylen))
       return 0;
-    // In reality we should check if keylen matches expectations
     if (keylen != 16 && keylen != 32)
       return 0;
   }
-
-  // We can ignore IVLEN setting for now as we hardcode support
   return 1;
 }
 
@@ -189,4 +215,130 @@ const OSSL_DISPATCH vc6_aes256ctr_functions[] = {
      (void (*)(void))vc6_aes_gettable_ctx_params},
     {OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS,
      (void (*)(void))vc6_aes_settable_ctx_params},
+    {0, NULL}};
+
+// --- ChaCha20 Implementation ---
+
+// Similar context
+typedef struct {
+  unsigned char key[32];
+  unsigned char iv[16];
+  int set_key;
+  int set_iv;
+} VC6_CHACHA_CTX;
+
+static void *vc6_chacha20_newctx(void *provctx) {
+  (void)provctx;
+  if (!inner_backend)
+    inner_backend = vc6_init();
+  return OPENSSL_zalloc(sizeof(VC6_CHACHA_CTX));
+}
+
+static void vc6_chacha20_freectx(void *vctx) { OPENSSL_free(vctx); }
+
+static int vc6_chacha20_init(void *vctx, const unsigned char *key,
+                             size_t keylen, const unsigned char *iv,
+                             size_t ivlen, const OSSL_PARAM params[]) {
+  VC6_CHACHA_CTX *ctx = (VC6_CHACHA_CTX *)vctx;
+  if (key != NULL) {
+    if (keylen != 32)
+      return 0;
+    memcpy(ctx->key, key, 32);
+    ctx->set_key = 1;
+  }
+  if (iv != NULL) {
+    // ChaCha20 IV usually 16 bytes in OpenSSL (contains counter + nonce)
+    // Or 12 byte nonce + 4 byte counter.
+    // We copy what we get. Max 16.
+    if (ivlen > 16)
+      ivlen = 16;
+    memcpy(ctx->iv, iv, ivlen);
+    ctx->set_iv = 1;
+  }
+  return 1;
+}
+
+static int vc6_chacha20_cipher(void *vctx, unsigned char *out, size_t *outl,
+                               size_t outsize, const unsigned char *in,
+                               size_t inl) {
+  VC6_CHACHA_CTX *ctx = (VC6_CHACHA_CTX *)vctx;
+  if (!inner_backend)
+    return 0;
+
+  // ALG_CHACHA20 = 1
+  int res = vc6_submit_job(inner_backend, in, out, inl, ctx->key, ctx->iv, 1);
+  if (!res) {
+    fprintf(stderr,
+            "[VC6-Provider] Error: vc6_submit_job failed for ChaCha20.\n");
+    return 0;
+  }
+  *outl = inl;
+  return 1;
+}
+
+static int vc6_chacha20_get_params(OSSL_PARAM params[]) {
+  OSSL_PARAM *p;
+  p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_BLOCK_SIZE);
+  if (p != NULL && !OSSL_PARAM_set_size_t(p, 1)) // Steam cipher, block size 1?
+    return 0;
+  p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
+  if (p != NULL && !OSSL_PARAM_set_size_t(p, 32))
+    return 0;
+  p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_IVLEN);
+  if (p != NULL && !OSSL_PARAM_set_size_t(p, 16))
+    return 0;
+  return 1;
+}
+
+static const OSSL_PARAM vc6_chacha20_known_gettable_params[] = {
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_IVLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_BLOCK_SIZE, NULL), OSSL_PARAM_END};
+
+static const OSSL_PARAM *vc6_chacha20_gettable_ctx_params(void *cctx,
+                                                          void *provctx) {
+  return vc6_chacha20_known_gettable_params;
+}
+
+static int vc6_chacha20_get_ctx_params(void *vctx, OSSL_PARAM params[]) {
+  OSSL_PARAM *p;
+  p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
+  if (p != NULL && !OSSL_PARAM_set_size_t(p, 32))
+    return 0;
+  p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_IVLEN);
+  if (p != NULL && !OSSL_PARAM_set_size_t(p, 16))
+    return 0;
+  return 1;
+}
+
+static int vc6_chacha20_set_ctx_params(void *vctx, const OSSL_PARAM params[]) {
+  return 1; // Stub
+}
+
+static const OSSL_PARAM vc6_chacha_known_settable_params[] = {
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_IVLEN, NULL), OSSL_PARAM_END};
+
+static const OSSL_PARAM *vc6_chacha20_settable_ctx_params(void *cctx,
+                                                          void *provctx) {
+  return vc6_chacha_known_settable_params;
+}
+
+const OSSL_DISPATCH vc6_chacha20_functions[] = {
+    {OSSL_FUNC_CIPHER_NEWCTX, (void (*)(void))vc6_chacha20_newctx},
+    {OSSL_FUNC_CIPHER_FREECTX, (void (*)(void))vc6_chacha20_freectx},
+    {OSSL_FUNC_CIPHER_ENCRYPT_INIT, (void (*)(void))vc6_chacha20_init},
+    {OSSL_FUNC_CIPHER_DECRYPT_INIT, (void (*)(void))vc6_chacha20_init},
+    {OSSL_FUNC_CIPHER_UPDATE, (void (*)(void))vc6_chacha20_cipher},
+    {OSSL_FUNC_CIPHER_FINAL,
+     (void (*)(void))vc6_aes_final}, // Reuse dummy final
+    {OSSL_FUNC_CIPHER_GET_PARAMS, (void (*)(void))vc6_chacha20_get_params},
+    {OSSL_FUNC_CIPHER_GET_CTX_PARAMS,
+     (void (*)(void))vc6_chacha20_get_ctx_params},
+    {OSSL_FUNC_CIPHER_SET_CTX_PARAMS,
+     (void (*)(void))vc6_chacha20_set_ctx_params},
+    {OSSL_FUNC_CIPHER_GETTABLE_CTX_PARAMS,
+     (void (*)(void))vc6_chacha20_gettable_ctx_params},
+    {OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS,
+     (void (*)(void))vc6_chacha20_settable_ctx_params},
     {0, NULL}};

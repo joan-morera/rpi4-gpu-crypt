@@ -1,4 +1,0 @@
-/home/joanmorera/Workshop/Github/rpi4-gpu-crypt/build/CMakeFiles/vc6_crypto.dir
-/home/joanmorera/Workshop/Github/rpi4-gpu-crypt/build/CMakeFiles/bench_runner.dir
-/home/joanmorera/Workshop/Github/rpi4-gpu-crypt/build/CMakeFiles/edit_cache.dir
-/home/joanmorera/Workshop/Github/rpi4-gpu-crypt/build/CMakeFiles/rebuild_cache.dir

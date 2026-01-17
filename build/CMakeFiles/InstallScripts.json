@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/joanmorera/Workshop/Github/rpi4-gpu-crypt/build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

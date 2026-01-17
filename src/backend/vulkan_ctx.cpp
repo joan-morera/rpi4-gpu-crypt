@@ -49,6 +49,9 @@ void VulkanContext::pickPhysicalDevice() {
   for (const auto &device : devices) {
     if (isDeviceSuitable(device)) {
       physicalDevice = device;
+      VkPhysicalDeviceProperties deviceProperties;
+      vkGetPhysicalDeviceProperties(device, &deviceProperties);
+      fprintf(stderr, "[VC6] Selected GPU: %s\n", deviceProperties.deviceName);
       break;
     }
   }
