@@ -34,9 +34,30 @@ private:
     const unsigned char *in;
     unsigned char *out;
     size_t len;
-    // Logic to map to ring buffer offsets would go here
   };
 
   void workerLoop();
   void dispatchBatch();
+
+  // Vulkan Objects
+  VkPipeline pipeline;
+  VkPipelineLayout pipelineLayout;
+  VkDescriptorSetLayout descriptorSetLayout;
+  VkDescriptorPool descriptorPool;
+  VkDescriptorSet descriptorSet;
+  VkCommandPool commandPool;
+  VkCommandBuffer commandBuffer;
+  VkFence computeFence;
+
+  // Parameter Buffer (UBO)
+  VkBuffer paramBuffer;
+  VkDeviceMemory paramMemory;
+  void *paramMappedUrl;
+
+  void createPipeline();
+  void createDescriptors();
+  void createCommandBuffers();
+  void createSyncObjects();
+
+  uint32_t loadShader(const char *filename, VkShaderModule *module);
 };

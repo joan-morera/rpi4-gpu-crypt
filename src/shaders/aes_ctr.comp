@@ -15,9 +15,9 @@ layout(std430, binding = 1) buffer OutputBuffer {
     uint outputData[];
 };
 
-layout(push_constant) uniform PushConsts {
+layout(std140, binding = 2) uniform Params {
     uint batchSize;
-    uint key[8]; // 256-bit key max
+    uint key[8];
     uint iv[4];
 } consts;
 

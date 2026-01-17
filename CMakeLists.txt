@@ -7,11 +7,20 @@ set(CMAKE_C_STANDARD 11)
 # Find OpenSSL
 find_package(OpenSSL REQUIRED)
 
-# Find Vulkan
+# Find Vulkan with glslc
 find_package(Vulkan REQUIRED)
+find_program(GLSLC glslc HINTS ${Vulkan_GLSLC_EXECUTABLE})
 
-include_directories(${OPENSSL_INCLUDE_DIR} ${Vulkan_INCLUDE_DIRS})
-include_directories(src)
+# Compile Shader
+set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/aes_ctr.comp")
+set(SHADER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/aes_ctr.spv")
+
+add_custom_command(
+    OUTPUT ${SHADER_BINARY}
+    COMMAND ${GLSLC} -O ${SHADER_SOURCE} -o ${SHADER_BINARY}
+    DEPENDS ${SHADER_SOURCE}
+    COMMENT "Compiling GLSL shader"
+)
 
 # Shared Library for the Provider
 add_library(vc6_crypto SHARED
@@ -20,6 +29,7 @@ add_library(vc6_crypto SHARED
     src/backend/vulkan_ctx.cpp
     src/backend/memory.cpp
     src/scheduler/batcher.cpp
+    ${SHADER_BINARY}
 )
 
 target_link_libraries(vc6_crypto

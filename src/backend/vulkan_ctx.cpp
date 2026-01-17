@@ -19,7 +19,7 @@ void VulkanContext::createInstance() {
   appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
   appInfo.pEngineName = "No Engine";
   appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-  appInfo.apiVersion = VK_API_VERSION_1_1;
+  appInfo.apiVersion = VK_API_VERSION_1_0;
 
   VkInstanceCreateInfo createInfo = {};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -29,8 +29,10 @@ void VulkanContext::createInstance() {
   createInfo.enabledLayerCount = 0;
   createInfo.enabledExtensionCount = 0;
 
-  if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create instance!");
+  VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("failed to create instance! Error code: " +
+                             std::to_string(res));
   }
 }
 
