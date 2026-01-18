@@ -1,5 +1,5 @@
 #version 450
-layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, binding = 0) readonly buffer InputBuffer {
     uint inputData[];
@@ -217,6 +217,7 @@ void main() {
     // s0..s3 are words containing packed bytes in correct order [B0 B1 B2 B3].
     // Standard store preserves this order. NO BSWAP NEEDED.
     
+    // Final XOR
     outputData[gID*4 + 0] = s0 ^ inputData[gID*4 + 0];
     outputData[gID*4 + 1] = s1 ^ inputData[gID*4 + 1];
     outputData[gID*4 + 2] = s2 ^ inputData[gID*4 + 2];

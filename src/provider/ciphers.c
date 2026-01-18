@@ -19,6 +19,9 @@ typedef struct {
   unsigned char iv[16];
   int set_key;
   int set_iv;
+  // Partial block buffering for stream continuity
+  unsigned char partial_buf[16];
+  size_t partial_len;
 } VC6_AES_CTX;
 
 static void *vc6_aes_newctx(void *provctx) {
@@ -52,12 +55,38 @@ static int vc6_aes_init(void *vctx, const unsigned char *key, size_t keylen,
     memcpy(ctx->iv, iv, ivlen);
     ctx->set_iv = 1;
   }
+  ctx->partial_len = 0;
   return 1;
 }
 
 static int vc6_aes_final(void *vctx, unsigned char *out, size_t *outl,
                          size_t outsize) {
+  VC6_AES_CTX *ctx = (VC6_AES_CTX *)vctx;
   *outl = 0;
+
+  if (ctx->partial_len > 0) {
+    if (!inner_backend)
+      return 0;
+
+    // Zero pad the rest of the block
+    for (size_t i = ctx->partial_len; i < 16; i++) {
+      ctx->partial_buf[i] = 0;
+    }
+
+    // Encrypt 1 block in-place (in partial_buf)
+    // Note: We use the current IV.
+    int res = vc6_submit_job(inner_backend, ctx->partial_buf, ctx->partial_buf,
+                             16, ctx->key, ctx->iv, 0);
+    if (!res)
+      return 0;
+
+    // Copy only the valid bytes to 'out'
+    if (outsize < ctx->partial_len)
+      return 0; // Error: output buffer too small
+
+    memcpy(out, ctx->partial_buf, ctx->partial_len);
+    *outl = ctx->partial_len;
+  }
   return 1;
 }
 
@@ -82,29 +111,62 @@ static void inc_128_counter(unsigned char *counter, size_t blocks) {
 static int vc6_aes_cipher(void *vctx, unsigned char *out, size_t *outl,
                           size_t outsize, const unsigned char *in, size_t inl) {
   VC6_AES_CTX *ctx = (VC6_AES_CTX *)vctx;
-
   if (!inner_backend)
     return 0;
 
-  // Expand Key
-  AES_KEY aes_key;
-  if (AES_set_encrypt_key(ctx->key, 128, &aes_key) < 0) {
-    return 0;
+  *outl = 0;
+  size_t total_written = 0;
+
+  // 1. Handle existing partial buffer
+  if (ctx->partial_len > 0) {
+    while (inl > 0 && ctx->partial_len < 16) {
+      ctx->partial_buf[ctx->partial_len++] = *in++;
+      inl--;
+    }
+
+    // If full, encrypt it
+    if (ctx->partial_len == 16) {
+      // Encrypt 1 block
+      int res = vc6_submit_job(inner_backend, ctx->partial_buf, out, 16,
+                               ctx->key, ctx->iv, 0);
+      if (!res)
+        return 0;
+
+      out += 16;
+      total_written += 16;
+      ctx->partial_len = 0;
+
+      // Increment IV by 1
+      inc_128_counter(ctx->iv, 1);
+    }
   }
 
-  // We pass the expanded key schedule (aes_key.rd_key) to the backend
-  int res = vc6_submit_job(inner_backend, in, out, inl,
-                           (unsigned char *)aes_key.rd_key, ctx->iv, 0);
+  // 2. Process Full Blocks from Input
+  if (inl >= 16) {
+    size_t full_blocks_len = inl & ~0xF; // Multiple of 16
 
-  if (!res) {
-    fprintf(stderr, "[VC6-Provider] Error: vc6_submit_job failed for AES.\n");
-    return 0; // Error
+    int res = vc6_submit_job(inner_backend, in, out, full_blocks_len, ctx->key,
+                             ctx->iv, 0);
+    if (!res)
+      return 0;
+
+    out += full_blocks_len;
+    in += full_blocks_len;
+    total_written += full_blocks_len;
+    inl -= full_blocks_len;
+
+    // Increment IV by block count
+    inc_128_counter(ctx->iv, full_blocks_len / 16);
   }
 
-  // FIXED: Increment IV by number of blocks processed!
-  inc_128_counter(ctx->iv, inl / 16);
+  // 3. Buffer remaining bytes
+  if (inl > 0) {
+    for (size_t i = 0; i < inl; i++) {
+      ctx->partial_buf[ctx->partial_len++] = in[i];
+    }
+  }
 
-  *outl = inl;
+  *outl = total_written;
   return 1;
 }
 
@@ -272,6 +334,15 @@ static int vc6_chacha20_cipher(void *vctx, unsigned char *out, size_t *outl,
             "[VC6-Provider] Error: vc6_submit_job failed for ChaCha20.\n");
     return 0;
   }
+
+  // CRITICAL FIX: Increment the Counter (bytes 0-3 of IV) for next batch
+  // ChaCha20 Counter is Little-Endian 32-bit at IV[0..3]
+  size_t blocks = (inl + 63) / 64; // Number of 64-byte blocks
+  uint32_t counter;
+  memcpy(&counter, ctx->iv, 4); // Read LE counter
+  counter += blocks;
+  memcpy(ctx->iv, &counter, 4); // Write back
+
   *outl = inl;
   return 1;
 }

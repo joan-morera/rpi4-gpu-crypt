@@ -1,21 +1,20 @@
-FROM debian:sid-slim
-
-# Avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+FROM alpine:latest
 
 # Install build dependencies + System OpenSSL
-RUN apt-get update && apt-get install -y \
-    build-essential \
+RUN apk upgrade && apk add --no-cache \
+    build-base \
     cmake \
     git \
-    libvulkan-dev \
-    vulkan-tools \
-    glslang-tools \
-    libssl-dev \
+    vulkan-loader-dev \
+    glslang \
+    openssl-dev \
     openssl \
-    mesa-vulkan-drivers \
-    bsdextrautils \
-    && rm -rf /var/lib/apt/lists/*
+    mesa-vulkan-broadcom \
+    mesa-vulkan-layers \
+    util-linux \
+    zip \
+    bash && \
+    rm -rf /var/cache/apk/*
 
 # Copy Project Source
 WORKDIR /app
@@ -33,7 +32,6 @@ RUN mkdir build && cd build && \
     cp chacha20.spv /usr/local/lib/
 
 # Config OpenSSL to use the provider by default
-# Debian's OpenSSL config is usually at /etc/ssl/openssl.cnf
 RUN echo "openssl_conf = openssl_init" >> /etc/ssl/openssl.cnf && \
     echo "[openssl_init]" >> /etc/ssl/openssl.cnf && \
     echo "providers = provider_sect" >> /etc/ssl/openssl.cnf && \

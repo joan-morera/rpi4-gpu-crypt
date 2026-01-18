@@ -130,7 +130,8 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
   // 2. Update params
   uint32_t *ubo = (uint32_t *)paramMappedUrl;
   if (alg == ALG_AES_CTR) {
-    ubo[0] = len / 16;
+    // FIXED: Round up to nearest block to handle partial blocks!
+    ubo[0] = (len + 15) / 16;
 
     // CRITICAL FIX: OpenSSL passes RAW 16-byte key, NOT expanded round keys!
     // We must expand the key here (AES-128 key expansion).
@@ -280,12 +281,12 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
     uint32_t blocks = len / 16;
     groupCount = (blocks + 255) / 256;
   } else {
-    // ChaCha: 64 threads per group.
+    // ChaCha: 256 threads per group (workaround for V3D SSBO bug).
     // Each thread processes ONE 64-byte block.
     // Total blocks = (len + 63) / 64.
-    // Groups = (Blocks + 63) / 64.
+    // Groups = (Blocks + 255) / 256.
     uint32_t blocks = (len + 63) / 64;
-    groupCount = (blocks + 63) / 64;
+    groupCount = (blocks + 255) / 256;
   }
 
   // Safety clamp
