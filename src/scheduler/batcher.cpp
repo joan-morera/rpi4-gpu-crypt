@@ -113,8 +113,14 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
     return false;
   }
 
-  if (alg >= ALG_COUNT || pipelines[alg] == VK_NULL_HANDLE) {
-    DEBUG_PRINT("Error: Invalid or uninitialized algorithm %d", alg);
+  // Map algorithm to pipeline index (AES-256 uses AES-128 pipeline)
+  int pipelineIdx = alg;
+  if (alg == ALG_AES256_CTR)
+    pipelineIdx = ALG_AES_CTR;
+
+  if (alg >= ALG_COUNT || pipelines[pipelineIdx] == VK_NULL_HANDLE) {
+    DEBUG_PRINT("Error: Invalid or uninitialized algorithm %d (pipeline %d)",
+                alg, pipelineIdx);
     return false;
   }
 
@@ -272,11 +278,7 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &beginInfo);
 
-  // Map algorithm to pipeline index (AES-256 uses AES-128 pipeline)
-  int pipelineIdx = alg;
-  if (alg == ALG_AES256_CTR)
-    pipelineIdx = ALG_AES_CTR;
-
+  // pipelineIdx was already computed at start of submit()
   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[pipelineIdx]);
   vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
                           1, &descriptorSet, 0, nullptr);

@@ -332,8 +332,8 @@ static int vc6_chacha20_cipher(void *vctx, unsigned char *out, size_t *outl,
   if (!inner_backend)
     return 0;
 
-  // ALG_CHACHA20 = 1
-  int res = vc6_submit_job(inner_backend, in, out, inl, ctx->key, ctx->iv, 1);
+  // ALG_CHACHA20 = 2 (after adding AES256_CTR)
+  int res = vc6_submit_job(inner_backend, in, out, inl, ctx->key, ctx->iv, 2);
   if (!res) {
     fprintf(stderr,
             "[VC6-Provider] Error: vc6_submit_job failed for ChaCha20.\n");
