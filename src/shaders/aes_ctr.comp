@@ -37,11 +37,8 @@ layout(std430, binding = 2) readonly buffer Params {
     uint batchSize;
     uint numRounds;     // 10 for AES-128, 14 for AES-256
     uint padding[2];
-    uint RoundKey[60];  // 44 for AES-128, 60 for AES-256 (use max)
+    uint RoundKey[60];  // Max size for AES-256
     uint IV[4];       
-    // 1+1+2+60+4 = 68 uints = 272 bytes.
-    // Pad to 512 bytes (128 uints) for alignment.
-    uint padding2[60]; // 68 + 60 = 128 uints.
     uint SBox[256];
 } params;
 

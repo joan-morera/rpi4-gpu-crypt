@@ -192,12 +192,12 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
     }
 
     // Buffer layout: batchSize(1) + numRounds(1) + padding(2) + RoundKey(60) +
-    // IV(4) + padding2(60) + SBox(256) Offsets: 0, 1, 2, 4, 64, 68, 128
-    memcpy(ubo + 4, w, expandedKeyWords * 4); // RoundKey at offset 16
-    memcpy(ubo + 64, iv, 16);                 // IV at offset 256 (64 uints)
+    // IV(4) + SBox(256) Offsets (uint32): 0, 1, 2-3, 4-63, 64-67, 68-323
+    memcpy(ubo + 4, w, expandedKeyWords * 4); // RoundKey at offset 16 bytes
+    memcpy(ubo + 64, iv, 16);                 // IV at offset 256 bytes
 
-    // Upload S-Box at offset 512 (128 uints)
-    uint32_t *dstSBox = ubo + 128;
+    // Upload S-Box at offset 68 (268 bytes)
+    uint32_t *dstSBox = ubo + 68;
     for (int i = 0; i < 256; i++) {
       dstSBox[i] = (uint32_t)sbox[i];
     }

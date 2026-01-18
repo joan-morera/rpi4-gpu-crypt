@@ -9,8 +9,7 @@ RUN apk upgrade && apk add --no-cache \
     glslang \
     openssl-dev \
     openssl \
-    mesa \
-    mesa-dri-gallium \
+    mesa-vulkan-broadcom \
     util-linux \
     zip \
     bash && \
