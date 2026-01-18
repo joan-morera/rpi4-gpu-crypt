@@ -129,12 +129,19 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
 
   // 2. Update params
   uint32_t *ubo = (uint32_t *)paramMappedUrl;
-  if (alg == ALG_AES_CTR) {
+  if (alg == ALG_AES_CTR || alg == ALG_AES256_CTR) {
     // FIXED: Round up to nearest block to handle partial blocks!
     ubo[0] = (len + 15) / 16;
 
-    // CRITICAL FIX: OpenSSL passes RAW 16-byte key, NOT expanded round keys!
-    // We must expand the key here (AES-128 key expansion).
+    // Determine key size and rounds based on algorithm
+    int keySize = (alg == ALG_AES256_CTR) ? 32 : 16; // bytes
+    int numRounds = (alg == ALG_AES256_CTR) ? 14 : 10;
+    int nk = keySize / 4; // Number of 32-bit words in key (4 or 8)
+    int nr = numRounds;   // Number of rounds
+    int expandedKeyWords = (nr + 1) * 4; // 44 or 60
+
+    ubo[1] = numRounds; // Store numRounds for shader
+
     static const uint8_t sbox[256] = {
         0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b,
         0xfe, 0xd7, 0xab, 0x76, 0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0,
@@ -158,37 +165,39 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
         0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
         0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f,
         0xb0, 0x54, 0xbb, 0x16};
-    static const uint8_t rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10,
-                                     0x20, 0x40, 0x80, 0x1b, 0x36};
+    static const uint8_t rcon[15] = {0x01, 0x02, 0x04, 0x08, 0x10,
+                                     0x20, 0x40, 0x80, 0x1b, 0x36,
+                                     0x6c, 0xd8, 0xab, 0x4d, 0x9a};
 
-    // AES-128 Key Expansion (key is 16 bytes, output is 44 words)
-    uint32_t w[44];
-    // Copy initial key (4 words)
-    memcpy(w, key, 16);
+    // AES Key Expansion (supports both 128-bit and 256-bit)
+    uint32_t w[60]; // Max size for AES-256
+    memcpy(w, key, keySize);
 
-    for (int i = 4; i < 44; i++) {
+    for (int i = nk; i < expandedKeyWords; i++) {
       uint32_t temp = w[i - 1];
-      if (i % 4 == 0) {
+      if (i % nk == 0) {
         // RotWord + SubWord + Rcon
-        temp =
-            ((temp >> 8) |
-             (temp << 24)); // RotWord (rotate left 8 bits when viewed as bytes)
+        temp = ((temp >> 8) | (temp << 24));
         temp = (sbox[temp & 0xFF]) | (sbox[(temp >> 8) & 0xFF] << 8) |
                (sbox[(temp >> 16) & 0xFF] << 16) |
                (sbox[(temp >> 24) & 0xFF] << 24);
-        temp ^= rcon[(i / 4) - 1];
+        temp ^= rcon[(i / nk) - 1];
+      } else if (nk > 6 && i % nk == 4) {
+        // AES-256 extra SubWord
+        temp = (sbox[temp & 0xFF]) | (sbox[(temp >> 8) & 0xFF] << 8) |
+               (sbox[(temp >> 16) & 0xFF] << 16) |
+               (sbox[(temp >> 24) & 0xFF] << 24);
       }
-      w[i] = w[i - 4] ^ temp;
+      w[i] = w[i - nk] ^ temp;
     }
 
-    // Copy expanded round keys to UBO (no bswap - shader uses LE)
-    memcpy(ubo + 4, w, 176);
+    // Buffer layout: batchSize(1) + numRounds(1) + padding(2) + RoundKey(60) +
+    // IV(4) + padding2(60) + SBox(256) Offsets: 0, 1, 2, 4, 64, 68, 128
+    memcpy(ubo + 4, w, expandedKeyWords * 4); // RoundKey at offset 16
+    memcpy(ubo + 64, iv, 16);                 // IV at offset 256 (64 uints)
 
-    // Copy IV (no bswap - already in correct format)
-    memcpy(ubo + 48, iv, 16);
-
-    // Upload S-Box (expanded to uint array)
-    uint32_t *dstSBox = (uint32_t *)((char *)ubo + 256);
+    // Upload S-Box at offset 512 (128 uints)
+    uint32_t *dstSBox = ubo + 128;
     for (int i = 0; i < 256; i++) {
       dstSBox[i] = (uint32_t)sbox[i];
     }
@@ -263,22 +272,21 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &beginInfo);
 
-  vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[alg]);
+  // Map algorithm to pipeline index (AES-256 uses AES-128 pipeline)
+  int pipelineIdx = alg;
+  if (alg == ALG_AES256_CTR)
+    pipelineIdx = ALG_AES_CTR;
+
+  vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[pipelineIdx]);
   vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
                           1, &descriptorSet, 0, nullptr);
 
   // Calculate generic group count
   uint32_t groupCount = 1;
-  if (alg == ALG_AES_CTR) {
-    // AES: 256 threads per group. Each thread does 1 block?
-    // AES shader: global_id * 16. wait.
-    // Re-checking AES work distribution.
-    // Shader: uint gID = gl_GlobalInvocationID.x;
-    // It processes ONE block per thread.
-    // Total blocks = len / 16.
-    // Total threads needed = len / 16.
-    // Groups = (Threads + 255) / 256.
-    uint32_t blocks = len / 16;
+  if (alg == ALG_AES_CTR || alg == ALG_AES256_CTR) {
+    // AES: 256 threads per group (V3D SSBO workaround).
+    // Each thread processes ONE 16-byte block.
+    uint32_t blocks = (len + 15) / 16;
     groupCount = (blocks + 255) / 256;
   } else {
     // ChaCha: 256 threads per group (workaround for V3D SSBO bug).

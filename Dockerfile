@@ -9,8 +9,8 @@ RUN apk upgrade && apk add --no-cache \
     glslang \
     openssl-dev \
     openssl \
-    mesa-vulkan-broadcom \
-    mesa-vulkan-layers \
+    mesa \
+    mesa-dri-gallium \
     util-linux \
     zip \
     bash && \
@@ -29,7 +29,8 @@ RUN mkdir build && cd build && \
     make -j$(nproc) && \
     cp libvc6_crypto.so /usr/local/lib/ && \
     cp aes_ctr.spv /usr/local/lib/ && \
-    cp chacha20.spv /usr/local/lib/
+    cp chacha20.spv /usr/local/lib/ && \
+    cp rc4.spv /usr/local/lib/
 
 # Config OpenSSL to use the provider by default
 RUN echo "openssl_conf = openssl_init" >> /etc/ssl/openssl.cnf && \

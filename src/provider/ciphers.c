@@ -19,6 +19,7 @@ typedef struct {
   unsigned char iv[16];
   int set_key;
   int set_iv;
+  size_t key_len; // 16 for AES-128, 32 for AES-256
   // Partial block buffering for stream continuity
   unsigned char partial_buf[16];
   size_t partial_len;
@@ -49,6 +50,7 @@ static int vc6_aes_init(void *vctx, const unsigned char *key, size_t keylen,
       return 0;
     }
     memcpy(ctx->key, key, keylen);
+    ctx->key_len = keylen;
     ctx->set_key = 1;
   }
   if (iv != NULL) {
@@ -75,8 +77,9 @@ static int vc6_aes_final(void *vctx, unsigned char *out, size_t *outl,
 
     // Encrypt 1 block in-place (in partial_buf)
     // Note: We use the current IV.
+    int alg_id = (ctx->key_len == 32) ? 1 : 0;
     int res = vc6_submit_job(inner_backend, ctx->partial_buf, ctx->partial_buf,
-                             16, ctx->key, ctx->iv, 0);
+                             16, ctx->key, ctx->iv, alg_id);
     if (!res)
       return 0;
 
@@ -126,9 +129,10 @@ static int vc6_aes_cipher(void *vctx, unsigned char *out, size_t *outl,
 
     // If full, encrypt it
     if (ctx->partial_len == 16) {
-      // Encrypt 1 block
+      // Encrypt 1 block (alg: 0=AES-128, 1=AES-256)
+      int alg_id = (ctx->key_len == 32) ? 1 : 0;
       int res = vc6_submit_job(inner_backend, ctx->partial_buf, out, 16,
-                               ctx->key, ctx->iv, 0);
+                               ctx->key, ctx->iv, alg_id);
       if (!res)
         return 0;
 
@@ -144,9 +148,10 @@ static int vc6_aes_cipher(void *vctx, unsigned char *out, size_t *outl,
   // 2. Process Full Blocks from Input
   if (inl >= 16) {
     size_t full_blocks_len = inl & ~0xF; // Multiple of 16
+    int alg_id = (ctx->key_len == 32) ? 1 : 0;
 
     int res = vc6_submit_job(inner_backend, in, out, full_blocks_len, ctx->key,
-                             ctx->iv, 0);
+                             ctx->iv, alg_id);
     if (!res)
       return 0;
 

@@ -1,0 +1,90 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// RC4 Stream Cipher GPU Implementation
+// Note: RC4 is inherently sequential due to its stateful nature.
+// We generate keystream for the entire batch, then XOR in parallel.
+
+layout(std430, binding = 0) readonly buffer InputBuffer {
+    uint inputData[];
+};
+
+layout(std430, binding = 1) writeonly buffer OutputBuffer {
+    uint outputData[];
+};
+
+layout(std430, binding = 2) readonly buffer Params {
+    uint batchSize;     // Number of bytes (total)
+    uint keyLen;        // Key length in bytes (1-256)
+    uint padding[2];
+    uint key[64];       // Key (up to 256 bytes = 64 uints)
+} params;
+
+// RC4 state is generated per-thread for its block range
+// This is a simplified approach: each thread generates keystream from the beginning
+// and only uses its portion. This is inefficient but correct.
+
+void main() {
+    uint gID = gl_GlobalInvocationID.x;
+    uint bytesPerThread = 4;  // Process 4 bytes (1 uint) per thread
+    uint startByte = gID * bytesPerThread;
+    
+    if (startByte >= params.batchSize) return;
+    
+    // Initialize S-box
+    uint S[256];
+    for (uint i = 0; i < 256; i++) {
+        S[i] = i;
+    }
+    
+    // Key-scheduling algorithm (KSA)
+    uint j = 0;
+    uint keyLen = params.keyLen;
+    for (uint i = 0; i < 256; i++) {
+        // Extract key byte
+        uint keyByteIdx = i % keyLen;
+        uint keyWord = params.key[keyByteIdx / 4];
+        uint keyByte = (keyWord >> ((keyByteIdx % 4) * 8)) & 0xFF;
+        
+        j = (j + S[i] + keyByte) & 0xFF;
+        
+        // Swap S[i] and S[j]
+        uint tmp = S[i];
+        S[i] = S[j];
+        S[j] = tmp;
+    }
+    
+    // Pseudo-random generation algorithm (PRGA) - skip to our position
+    uint i = 0;
+    j = 0;
+    
+    // Generate keystream up to our start position (and discard)
+    for (uint k = 0; k < startByte; k++) {
+        i = (i + 1) & 0xFF;
+        j = (j + S[i]) & 0xFF;
+        
+        uint tmp = S[i];
+        S[i] = S[j];
+        S[j] = tmp;
+    }
+    
+    // Generate 4 bytes of keystream for our position
+    uint keystream = 0;
+    for (uint b = 0; b < 4; b++) {
+        if (startByte + b >= params.batchSize) break;
+        
+        i = (i + 1) & 0xFF;
+        j = (j + S[i]) & 0xFF;
+        
+        uint tmp = S[i];
+        S[i] = S[j];
+        S[j] = tmp;
+        
+        uint K = S[(S[i] + S[j]) & 0xFF];
+        keystream |= (K << (b * 8));
+    }
+    
+    // XOR with input
+    uint inWord = inputData[gID];
+    outputData[gID] = inWord ^ keystream;
+}
