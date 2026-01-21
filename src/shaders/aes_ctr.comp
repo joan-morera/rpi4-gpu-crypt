@@ -35,11 +35,11 @@ layout(std430, binding = 1) writeonly buffer OutputBuffer {
 
 layout(std430, binding = 2) readonly buffer Params {
     uint batchSize;
-    uint padding[3];
-    uint RoundKey[44];  // 44 uints = 176 bytes, ends at byte 192
-    uint IV[4];         // 4 uints = 16 bytes, ends at byte 208
-    uint padding2[12];  // 12 uints = 48 bytes, ends at byte 256
-    uint SBox[256];     // 256 uints at byte 256
+    uint numRounds;     // 10 for AES-128, 14 for AES-256
+    uint padding[2];
+    uint RoundKey[60];  // 60 uints = 240 bytes (max for AES-256)
+    uint IV[4];         // 4 uints = 16 bytes
+    uint SBox[256];     // 256 uints = 1024 bytes
 } params;
 
 // Macros to extract bytes
@@ -164,8 +164,9 @@ void main() {
     uint s2 = b2 ^ params.RoundKey[2];
     uint s3 = b3 ^ params.RoundKey[3];
     
-    // AES-128: 10 rounds (9 main + 1 final)
-    for (uint r=1; r < 10; r++) {
+    // AES rounds: 10 for AES-128, 14 for AES-256
+    uint nr = params.numRounds;
+    for (uint r=1; r < nr; r++) {
         // SubBytes + ShiftRows
         // Row 0: s0.0 s1.1 s2.2 s3.3
         // Row 1: s1.0 s2.1 s3.2 s0.3
@@ -206,11 +207,12 @@ void main() {
     uint c2 = (t2 & 0xFF) | (t3 & 0xFF00) | (t0 & 0xFF0000) | (t1 & 0xFF000000);
     uint c3 = (t3 & 0xFF) | (t0 & 0xFF00) | (t1 & 0xFF0000) | (t2 & 0xFF000000);
     
-    // Final round key at index 40-43 (round 10 * 4)
-    s0 = c0 ^ params.RoundKey[40];
-    s1 = c1 ^ params.RoundKey[41];
-    s2 = c2 ^ params.RoundKey[42];
-    s3 = c3 ^ params.RoundKey[43];
+    // Final round key at index nr*4 (40 for AES-128, 56 for AES-256)
+    uint finalKeyOff = nr * 4;
+    s0 = c0 ^ params.RoundKey[finalKeyOff + 0];
+    s1 = c1 ^ params.RoundKey[finalKeyOff + 1];
+    s2 = c2 ^ params.RoundKey[finalKeyOff + 2];
+    s3 = c3 ^ params.RoundKey[finalKeyOff + 3];
 
     // Output is Keystream (s0..s3). 
     // s0..s3 are words containing packed bytes in correct order [B0 B1 B2 B3].

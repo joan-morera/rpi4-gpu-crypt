@@ -139,6 +139,14 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
     // FIXED: Round up to nearest block to handle partial blocks!
     ubo[0] = (len + 15) / 16;
 
+    // Determine key size and rounds based on algorithm
+    int keySize = (alg == ALG_AES256_CTR) ? 32 : 16;
+    int numRounds = (alg == ALG_AES256_CTR) ? 14 : 10;
+    int nk = keySize / 4;                       // Words in key (4 or 8)
+    int expandedKeyWords = (numRounds + 1) * 4; // 44 or 60
+
+    ubo[1] = numRounds; // Store numRounds for shader
+
     static const uint8_t sbox[256] = {
         0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b,
         0xfe, 0xd7, 0xab, 0x76, 0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0,
@@ -162,33 +170,40 @@ bool Batcher::submit(const unsigned char *in, unsigned char *out, size_t len,
         0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
         0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f,
         0xb0, 0x54, 0xbb, 0x16};
-    static const uint8_t rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10,
-                                     0x20, 0x40, 0x80, 0x1b, 0x36};
+    static const uint8_t rcon[15] = {0x01, 0x02, 0x04, 0x08, 0x10,
+                                     0x20, 0x40, 0x80, 0x1b, 0x36,
+                                     0x6c, 0xd8, 0xab, 0x4d, 0x9a};
 
-    // AES-128 Key Expansion (key is 16 bytes, output is 44 words)
-    uint32_t w[44];
-    memcpy(w, key, 16);
+    // AES Key Expansion (supports both 128-bit and 256-bit)
+    uint32_t w[60]; // Max size for AES-256
+    memcpy(w, key, keySize);
 
-    for (int i = 4; i < 44; i++) {
+    for (int i = nk; i < expandedKeyWords; i++) {
       uint32_t temp = w[i - 1];
-      if (i % 4 == 0) {
+      if (i % nk == 0) {
+        // RotWord + SubWord + Rcon
         temp = ((temp >> 8) | (temp << 24));
         temp = (sbox[temp & 0xFF]) | (sbox[(temp >> 8) & 0xFF] << 8) |
                (sbox[(temp >> 16) & 0xFF] << 16) |
                (sbox[(temp >> 24) & 0xFF] << 24);
-        temp ^= rcon[(i / 4) - 1];
+        temp ^= rcon[(i / nk) - 1];
+      } else if (nk > 6 && i % nk == 4) {
+        // AES-256 extra SubWord step
+        temp = (sbox[temp & 0xFF]) | (sbox[(temp >> 8) & 0xFF] << 8) |
+               (sbox[(temp >> 16) & 0xFF] << 16) |
+               (sbox[(temp >> 24) & 0xFF] << 24);
       }
-      w[i] = w[i - 4] ^ temp;
+      w[i] = w[i - nk] ^ temp;
     }
 
-    // Original working layout:
-    // batchSize at 0, padding at 1-3, RoundKey at 4-47, IV at 48-51, SBox at
-    // 256 bytes
-    memcpy(ubo + 4, w, 176);  // RoundKey at offset 16 bytes
-    memcpy(ubo + 48, iv, 16); // IV at offset 192 bytes
+    // New buffer layout:
+    // ubo[0] = batchSize, ubo[1] = numRounds, ubo[2..3] = padding
+    // ubo[4..63] = RoundKey[60], ubo[64..67] = IV[4], ubo[68..] = SBox[256]
+    memcpy(ubo + 4, w, expandedKeyWords * 4); // RoundKey at offset 16 bytes
+    memcpy(ubo + 64, iv, 16);                 // IV at offset 256 bytes
 
-    // Upload S-Box at offset 256 bytes (64 uints)
-    uint32_t *dstSBox = (uint32_t *)((char *)ubo + 256);
+    // Upload S-Box starting at ubo[68] (offset 272 bytes)
+    uint32_t *dstSBox = ubo + 68;
     for (int i = 0; i < 256; i++) {
       dstSBox[i] = (uint32_t)sbox[i];
     }
