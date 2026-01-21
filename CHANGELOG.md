@@ -32,6 +32,23 @@ All notable fixes and debugging history for the rpi4-gpu-crypt project.
 
 ---
 
+### Fixed: AES-256-CTR Only Using 10 Rounds
+**Symptom:** AES-256-CTR produced incorrect output (data mismatch at first byte).
+
+**Root Cause:** 
+1. Shader was hardcoded for 10 rounds (`r < 10`) instead of dynamic
+2. `RoundKey[44]` only held 44 words (enough for AES-128, not 256)
+3. Batcher only did AES-128 key expansion (44 words, no extra SubWord)
+
+**Fix:**
+- Shader: Added `numRounds` param, expanded to `RoundKey[60]`, dynamic loop/final key
+- Batcher: Full AES-256 key expansion with extra SubWord every 8th word
+- Extended rcon table from 10 to 15 entries
+
+**Commit:** `aeb8b70` - feat: Implement full AES-256-CTR support
+
+---
+
 ### Known Issue: AES-256-CTR Hardcoded for 10 Rounds
 **Status:** Not yet fixed.
 

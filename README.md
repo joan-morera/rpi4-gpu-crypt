@@ -7,7 +7,7 @@ GPU-accelerated cryptography for Raspberry Pi 4 using Vulkan Compute shaders, in
 | Algorithm | Status | Throughput | Notes |
 |-----------|--------|------------|-------|
 | **AES-128-CTR** | ✅ Verified | ~10 MB/s | S-Box based, CPU key expansion |
-| **AES-256-CTR** | ⚠️ Broken | - | Shader hardcoded for 10 rounds (needs 14) |
+| **AES-256-CTR** | ✅ Verified | ~10 MB/s | 14 rounds, 60 round keys |
 | **ChaCha20** | ✅ Verified | ~12 MB/s | Standard IETF layout, 64-byte blocks |
 | **RC4** | 🚧 Unimplemented | - | Legacy support planned |
 
