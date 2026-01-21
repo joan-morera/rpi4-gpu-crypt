@@ -63,8 +63,8 @@ Batcher::Batcher(VulkanContext *ctx) : ctx(ctx), running(true) {
       0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f,
       0xb0, 0x54, 0xbb, 0x16};
 
-  // Copy SBox to offset 272 bytes (ubo+68) - after RoundKey[60] and IV[4]\n
-  // memcpy(((char *)paramMappedUrl) + 272, sboxTbl, sizeof(sboxTbl));
+  // Copy SBox to offset 272 bytes (ubo+68) - after RoundKey[60] and IV[4]
+  memcpy(((char *)paramMappedUrl) + 272, sboxTbl, sizeof(sboxTbl));
 
   DEBUG_PRINT("Creating Descriptors...");
   createDescriptors();
