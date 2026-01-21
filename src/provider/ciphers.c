@@ -286,12 +286,14 @@ const OSSL_DISPATCH vc6_aes256ctr_functions[] = {
 
 // --- ChaCha20 Implementation ---
 
-// Similar context
 typedef struct {
   unsigned char key[32];
   unsigned char iv[16];
   int set_key;
   int set_iv;
+  // Partial block buffering for stream continuity
+  unsigned char partial_buf[64];
+  size_t partial_len;
 } VC6_CHACHA_CTX;
 
 static void *vc6_chacha20_newctx(void *provctx) {
@@ -314,14 +316,12 @@ static int vc6_chacha20_init(void *vctx, const unsigned char *key,
     ctx->set_key = 1;
   }
   if (iv != NULL) {
-    // ChaCha20 IV usually 16 bytes in OpenSSL (contains counter + nonce)
-    // Or 12 byte nonce + 4 byte counter.
-    // We copy what we get. Max 16.
     if (ivlen > 16)
       ivlen = 16;
     memcpy(ctx->iv, iv, ivlen);
     ctx->set_iv = 1;
   }
+  ctx->partial_len = 0;
   return 1;
 }
 
@@ -332,23 +332,81 @@ static int vc6_chacha20_cipher(void *vctx, unsigned char *out, size_t *outl,
   if (!inner_backend)
     return 0;
 
-  // ALG_CHACHA20 = 2 (after adding AES256_CTR)
-  int res = vc6_submit_job(inner_backend, in, out, inl, ctx->key, ctx->iv, 2);
-  if (!res) {
-    fprintf(stderr,
-            "[VC6-Provider] Error: vc6_submit_job failed for ChaCha20.\n");
-    return 0;
+  *outl = 0;
+  size_t total_written = 0;
+
+  // 1. Handle existing partial buffer
+  if (ctx->partial_len > 0) {
+    while (inl > 0 && ctx->partial_len < 64) {
+      ctx->partial_buf[ctx->partial_len++] = *in++;
+      inl--;
+    }
+    if (ctx->partial_len == 64) {
+      int res = vc6_submit_job(inner_backend, ctx->partial_buf, out, 64,
+                               ctx->key, ctx->iv, 2);
+      if (!res)
+        return 0;
+      out += 64;
+      total_written += 64;
+      ctx->partial_len = 0;
+      // Increment counter by 1 block
+      uint32_t counter;
+      memcpy(&counter, ctx->iv, 4);
+      counter += 1;
+      memcpy(ctx->iv, &counter, 4);
+    }
   }
 
-  // CRITICAL FIX: Increment the Counter (bytes 0-3 of IV) for next batch
-  // ChaCha20 Counter is Little-Endian 32-bit at IV[0..3]
-  size_t blocks = (inl + 63) / 64; // Number of 64-byte blocks
-  uint32_t counter;
-  memcpy(&counter, ctx->iv, 4); // Read LE counter
-  counter += blocks;
-  memcpy(ctx->iv, &counter, 4); // Write back
+  // 2. Process full 64-byte blocks
+  if (inl >= 64) {
+    size_t full_blocks_len = inl & ~0x3F; // Multiple of 64
+    int res = vc6_submit_job(inner_backend, in, out, full_blocks_len, ctx->key,
+                             ctx->iv, 2);
+    if (!res)
+      return 0;
+    out += full_blocks_len;
+    in += full_blocks_len;
+    total_written += full_blocks_len;
+    inl -= full_blocks_len;
+    // Increment counter
+    uint32_t counter;
+    memcpy(&counter, ctx->iv, 4);
+    counter += full_blocks_len / 64;
+    memcpy(ctx->iv, &counter, 4);
+  }
 
-  *outl = inl;
+  // 3. Buffer remaining bytes
+  if (inl > 0) {
+    for (size_t i = 0; i < inl; i++) {
+      ctx->partial_buf[ctx->partial_len++] = in[i];
+    }
+  }
+
+  *outl = total_written;
+  return 1;
+}
+
+static int vc6_chacha20_final(void *vctx, unsigned char *out, size_t *outl,
+                              size_t outsize) {
+  VC6_CHACHA_CTX *ctx = (VC6_CHACHA_CTX *)vctx;
+  *outl = 0;
+
+  if (ctx->partial_len > 0) {
+    if (!inner_backend)
+      return 0;
+    // Zero pad to 64 bytes
+    for (size_t i = ctx->partial_len; i < 64; i++) {
+      ctx->partial_buf[i] = 0;
+    }
+    int res = vc6_submit_job(inner_backend, ctx->partial_buf, ctx->partial_buf,
+                             64, ctx->key, ctx->iv, 2);
+    if (!res)
+      return 0;
+    if (outsize < ctx->partial_len)
+      return 0;
+    memcpy(out, ctx->partial_buf, ctx->partial_len);
+    *outl = ctx->partial_len;
+  }
   return 1;
 }
 
@@ -406,8 +464,7 @@ const OSSL_DISPATCH vc6_chacha20_functions[] = {
     {OSSL_FUNC_CIPHER_ENCRYPT_INIT, (void (*)(void))vc6_chacha20_init},
     {OSSL_FUNC_CIPHER_DECRYPT_INIT, (void (*)(void))vc6_chacha20_init},
     {OSSL_FUNC_CIPHER_UPDATE, (void (*)(void))vc6_chacha20_cipher},
-    {OSSL_FUNC_CIPHER_FINAL,
-     (void (*)(void))vc6_aes_final}, // Reuse dummy final
+    {OSSL_FUNC_CIPHER_FINAL, (void (*)(void))vc6_chacha20_final},
     {OSSL_FUNC_CIPHER_GET_PARAMS, (void (*)(void))vc6_chacha20_get_params},
     {OSSL_FUNC_CIPHER_GET_CTX_PARAMS,
      (void (*)(void))vc6_chacha20_get_ctx_params},
