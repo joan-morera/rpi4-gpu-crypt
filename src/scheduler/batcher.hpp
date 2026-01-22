@@ -13,14 +13,8 @@ public:
   Batcher(VulkanContext *ctx);
   ~Batcher();
 
-  // The main entry point for the OpenSSL Provider
-  enum Algorithm {
-    ALG_AES_CTR = 0,    // AES-128-CTR
-    ALG_AES256_CTR = 1, // AES-256-CTR (uses same pipeline)
-    ALG_CHACHA20 = 2,
-    ALG_RC4 = 3,
-    ALG_COUNT = 4
-  };
+  // Algorithm IDs for OpenSSL Provider
+  enum Algorithm { ALG_AES256_CTR = 0, ALG_CHACHA20 = 1, ALG_COUNT = 2 };
 
   // Returns true on success, false on error
   bool submit(const unsigned char *in, unsigned char *out, size_t len,

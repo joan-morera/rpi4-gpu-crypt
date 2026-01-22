@@ -6,10 +6,8 @@ GPU-accelerated cryptography for Raspberry Pi 4 using Vulkan Compute shaders, in
 
 | Algorithm | Status | Throughput | Notes |
 |-----------|--------|------------|-------|
-| **AES-128-CTR** | ✅ Verified | ~10 MB/s | S-Box based, CPU key expansion |
 | **AES-256-CTR** | ✅ Verified | ~10 MB/s | 14 rounds, 60 round keys |
 | **ChaCha20** | ✅ Verified | ~12 MB/s | Standard IETF layout, 64-byte blocks |
-| **RC4** | 🚧 Unimplemented | - | Legacy support planned |
 
 ## Quick Start
 
@@ -40,15 +38,14 @@ docker run -it --rm --device /dev/dri:/dev/dri --tmpfs /ram:rw,size=512M rpi4-gp
 ┌─────────────────────────▼───────────────────────────────────┐
 │              Vulkan Scheduler (batcher.cpp)                  │
 │  - 64MB Zero-Copy Ring Buffer                               │
-│  - AES Key Expansion (128/256-bit)                          │
+│  - AES-256 Key Expansion                                    │
 │  - Memory coherency (Flush/Invalidate)                      │
 └─────────────────────────┬───────────────────────────────────┘
                           │ Vulkan Compute
 ┌─────────────────────────▼───────────────────────────────────┐
 │              GPU Compute Shaders (SPIR-V)                    │
-│  - aes_ctr.comp: AES-128/256-CTR                            │
+│  - aes256_ctr.comp: AES-256-CTR                             │
 │  - chacha20.comp: ChaCha20                                  │
-│  - rc4.comp: RC4                                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,21 +61,21 @@ docker run -it --rm --device /dev/dri:/dev/dri --tmpfs /ram:rw,size=512M rpi4-gp
 ### Encrypt with GPU, Decrypt with CPU
 ```bash
 # Encrypt using GPU provider
-openssl enc -aes-128-ctr -provider vc6 -propquery provider=vc6 \
+openssl enc -aes-256-ctr -provider vc6 -propquery provider=vc6 \
     -in plaintext.bin -out encrypted.bin \
-    -K 000102030405060708090a0b0c0d0e0f \
+    -K 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
     -iv 000102030405060708090a0b0c0d0e0f
 
 # Decrypt using CPU (verify correctness)
-openssl enc -d -aes-128-ctr -provider default \
+openssl enc -d -aes-256-ctr -provider default \
     -in encrypted.bin -out decrypted.bin \
-    -K 000102030405060708090a0b0c0d0e0f \
+    -K 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
     -iv 000102030405060708090a0b0c0d0e0f
 ```
 
 ### Benchmark
 ```bash
-openssl speed -provider vc6 -propquery provider=vc6 -evp aes-128-ctr -bytes 1048576
+openssl speed -provider vc6 -propquery provider=vc6 -evp aes-256-ctr -bytes 1048576
 ```
 
 ## Prerequisites
@@ -98,20 +95,20 @@ openssl speed -provider vc6 -propquery provider=vc6 -evp aes-128-ctr -bytes 1048
 
 ## Implementation Notes
 
-### AES-CTR
-- Key expansion performed on CPU (OpenSSL passes raw key)
+### AES-256-CTR
+- Key expansion performed on CPU
 - Counter increments as Big-Endian 128-bit integer
 - S-Box stored in SSBO (256 uint32 values)
+- 14 rounds, 60 round keys
 
 ### ChaCha20
 - Standard 20-round quarter-round implementation
 - IV layout: `[Counter 4B][Nonce 12B]` (OpenSSL convention)
 - Each thread processes one 64-byte block
 
-### RC4
-- Stateful stream cipher (256-byte permutation table)
-- Keystream generated sequentially, XOR parallelized
-- Legacy support for libtorrent v1 protocol encryption
+## License
+
+Apache License 2.0 - See [LICENSE](LICENSE) for details
 
 ---
 *GPU Crypto Provider for Raspberry Pi 4*

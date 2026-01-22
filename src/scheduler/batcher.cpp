@@ -591,12 +591,11 @@ void Batcher::dispatchBatch() {}
 #include "aes128_batcher.hpp"
 #include "aes256_batcher.hpp"
 
-// Backend handle structure - holds all batchers
+// Backend handle structure
 struct VC6Backend {
   VulkanContext *ctx;
-  AES128Batcher *aes128;
   AES256Batcher *aes256;
-  Batcher *chacha; // ChaCha20 and other ciphers
+  Batcher *chacha;
 };
 
 // Extern C Interface (Updated with dedicated batchers)
@@ -604,7 +603,6 @@ extern "C" {
 void *vc6_init() {
   VC6Backend *backend = new VC6Backend();
   backend->ctx = new VulkanContext();
-  backend->aes128 = new AES128Batcher(backend->ctx);
   backend->aes256 = new AES256Batcher(backend->ctx);
   backend->chacha = new Batcher(backend->ctx);
   return (void *)backend;
@@ -612,7 +610,6 @@ void *vc6_init() {
 
 void vc6_cleanup(void *handle) {
   VC6Backend *backend = (VC6Backend *)handle;
-  delete backend->aes128;
   delete backend->aes256;
   delete backend->chacha;
   delete backend->ctx;
@@ -625,12 +622,9 @@ int vc6_submit_job(void *handle, const unsigned char *in, unsigned char *out,
   VC6Backend *backend = (VC6Backend *)handle;
 
   switch (alg_id) {
-  case 0: // ALG_AES_CTR (AES-128)
-    return backend->aes128->submit(in, out, len, key, iv) ? 1 : 0;
-  case 1: // ALG_AES256_CTR
+  case 0: // ALG_AES256_CTR
     return backend->aes256->submit(in, out, len, key, iv) ? 1 : 0;
-  case 2: // ALG_CHACHA20
-  case 3: // ALG_RC4
+  case 1: // ALG_CHACHA20
     return backend->chacha->submit(in, out, len, key, iv,
                                    (Batcher::Algorithm)alg_id)
                ? 1

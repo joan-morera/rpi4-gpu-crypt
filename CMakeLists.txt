@@ -23,17 +23,6 @@ else()
     set(GLSLC_CMD ${GLSLC} -O)
 endif()
 
-# Compile AES-128 Shader
-set(SHADER_SOURCE_AES128 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/aes128_ctr.comp")
-set(SHADER_BINARY_AES128 "${CMAKE_CURRENT_BINARY_DIR}/aes128_ctr.spv")
-
-add_custom_command(
-    OUTPUT ${SHADER_BINARY_AES128}
-    COMMAND ${GLSLC_CMD} ${SHADER_SOURCE_AES128} -o ${SHADER_BINARY_AES128}
-    DEPENDS ${SHADER_SOURCE_AES128}
-    COMMENT "Compiling AES-128 GLSL shader"
-)
-
 # Compile AES-256 Shader
 set(SHADER_SOURCE_AES256 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/aes256_ctr.comp")
 set(SHADER_BINARY_AES256 "${CMAKE_CURRENT_BINARY_DIR}/aes256_ctr.spv")
@@ -55,29 +44,15 @@ add_custom_command(
     COMMENT "Compiling ChaCha20 GLSL shader"
 )
 
-set(SHADER_SOURCE_RC4 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/rc4.comp")
-set(SHADER_BINARY_RC4 "${CMAKE_CURRENT_BINARY_DIR}/rc4.spv")
-
-add_custom_command(
-    OUTPUT ${SHADER_BINARY_RC4}
-    COMMAND ${GLSLC_CMD} ${SHADER_SOURCE_RC4} -o ${SHADER_BINARY_RC4}
-    DEPENDS ${SHADER_SOURCE_RC4}
-    COMMENT "Compiling RC4 GLSL shader"
-)
-
-# Shared Library for the Provider
 add_library(vc6_crypto SHARED
     src/provider/entrypoint.c
     src/provider/ciphers.c
     src/backend/vulkan_ctx.cpp
     src/backend/memory.cpp
     src/scheduler/batcher.cpp
-    src/scheduler/aes128_batcher.cpp
     src/scheduler/aes256_batcher.cpp
-    ${SHADER_BINARY_AES128}
     ${SHADER_BINARY_AES256}
     ${SHADER_BINARY_CHACHA}
-    ${SHADER_BINARY_RC4}
 )
 
 target_link_libraries(vc6_crypto
