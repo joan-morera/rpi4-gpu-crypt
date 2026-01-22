@@ -587,24 +587,56 @@ void Batcher::createSyncObjects() {
 void Batcher::workerLoop() {}
 void Batcher::dispatchBatch() {}
 
-// Extern C Interface (Updated)
+// Include dedicated AES batchers
+#include "aes128_batcher.hpp"
+#include "aes256_batcher.hpp"
+
+// Backend handle structure - holds all batchers
+struct VC6Backend {
+  VulkanContext *ctx;
+  AES128Batcher *aes128;
+  AES256Batcher *aes256;
+  Batcher *chacha; // ChaCha20 and other ciphers
+};
+
+// Extern C Interface (Updated with dedicated batchers)
 extern "C" {
 void *vc6_init() {
-  VulkanContext *ctx = new VulkanContext();
-  Batcher *batcher = new Batcher(ctx);
-  return (void *)batcher;
+  VC6Backend *backend = new VC6Backend();
+  backend->ctx = new VulkanContext();
+  backend->aes128 = new AES128Batcher(backend->ctx);
+  backend->aes256 = new AES256Batcher(backend->ctx);
+  backend->chacha = new Batcher(backend->ctx);
+  return (void *)backend;
 }
 
 void vc6_cleanup(void *handle) {
-  Batcher *batcher = (Batcher *)handle;
-  delete batcher;
+  VC6Backend *backend = (VC6Backend *)handle;
+  delete backend->aes128;
+  delete backend->aes256;
+  delete backend->chacha;
+  delete backend->ctx;
+  delete backend;
 }
 
 int vc6_submit_job(void *handle, const unsigned char *in, unsigned char *out,
                    size_t len, const unsigned char *key,
                    const unsigned char *iv, int alg_id) {
-  Batcher *batcher = (Batcher *)handle;
-  return batcher->submit(in, out, len, key, iv, (Batcher::Algorithm)alg_id) ? 1
-                                                                            : 0;
+  VC6Backend *backend = (VC6Backend *)handle;
+
+  switch (alg_id) {
+  case 0: // ALG_AES_CTR (AES-128)
+    return backend->aes128->submit(in, out, len, key, iv) ? 1 : 0;
+  case 1: // ALG_AES256_CTR
+    return backend->aes256->submit(in, out, len, key, iv) ? 1 : 0;
+  case 2: // ALG_CHACHA20
+  case 3: // ALG_RC4
+    return backend->chacha->submit(in, out, len, key, iv,
+                                   (Batcher::Algorithm)alg_id)
+               ? 1
+               : 0;
+  default:
+    return 0;
+  }
 }
 }

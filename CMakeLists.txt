@@ -72,6 +72,8 @@ add_library(vc6_crypto SHARED
     src/backend/vulkan_ctx.cpp
     src/backend/memory.cpp
     src/scheduler/batcher.cpp
+    src/scheduler/aes128_batcher.cpp
+    src/scheduler/aes256_batcher.cpp
     ${SHADER_BINARY_AES128}
     ${SHADER_BINARY_AES256}
     ${SHADER_BINARY_CHACHA}

@@ -9,99 +9,22 @@ layout(std430, binding = 1) writeonly buffer OutputBuffer {
     uint outputData[];
 };
 
-// Params UBO
-// Batch Size: Number of 16-byte blocks
-// Round Keys: 11 * 16 bytes = 176 bytes (44 uints)
-// IV: 16 bytes (4 uints)
-// SBox: 256 uints (1024 bytes) at offset 1024? 
-// Std140 alignment rules: Arrays of scalars are aligned to 16 bytes (vec4).
-// uint RoundKey[44] -> Array of uints. stride 16 in std140?
-// Wait. layout(std140) implies:
-// uint -> 4 bytes, aligned 4.
-// uint arr[] -> each element aligned to 16 bytes! (vec4 alignment).
-// This is disastrous for packing.
-// Using std430 (Storage Buffer) is better for alignment, but Uniform Buffers usually force std140.
-// Actually, `layout(binding=2) uniform Params` -> UBO.
-// If I use `layout(binding=2) buffer Params` -> SSBO (std430).
-// SSBOs on Pi 4 are supported and allow tight packing (std430).
-// Let's switch Params to SSBO (std430) to avoid std140 padding headaches.
-// Batcher creates it as VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT though.
-// I should change Batcher to VK_BUFFER_USAGE_STORAGE_BUFFER_BIT for Params too.
-// Or just deal with alignment? SBox[256] in std140 would be 256 * 16 = 4096 bytes!
-// That's fine, we have 4KB.
-// BUT, I need to upload sparsely if I stick to std140.
-// Or, MUCH BETTER: Just use `layout(std430, binding=2) buffer Params`.
-// Switch binding 2 to STORAGE_BUFFER in Batcher.
-
+// AES Extended Layout (works for both 128 and 256)
+// batchSize@0, numRounds@4, padding[2]@8-16, RoundKey[60]@16-256, IV[4]@256-272, SBox[256]@272
 layout(std430, binding = 2) readonly buffer Params {
     uint batchSize;
     uint numRounds;     // 10 for AES-128, 14 for AES-256
     uint padding[2];
-    uint RoundKey[60];  // 60 uints = 240 bytes (max for AES-256)
-    uint IV[4];         // 4 uints = 16 bytes
-    uint SBox[256];     // 256 uints = 1024 bytes
+    uint RoundKey[60];
+    uint IV[4];
+    uint SBox[256];
 } params;
 
-// Macros to extract bytes
-#define GETBYTE(w, n) ((w >> (n*8)) & 0xFF)
-
-// Helper to look up Te0 values using SBox
-// Te0[x] = {2S[x], S[x], S[x], 3S[x]}
-uint LookUpTe0(uint b) {
-    uint s = params.SBox[b];
-    uint s2 = (s<<1) ^ (((s>>7) & 1) * 0x1b); // xtime(s)
-    uint s3 = s2 ^ s;
-    return (s2 << 24) | (s << 16) | (s << 8) | s3;
-}
-
-// ... Wait, pasting a 1KB table in shader source is fine.
-// I'll assume users want "real" AES code.
-
-uint RotWord(uint w) {
-    return (w >> 8) | (w << 24);
-}
-
-// Full Round function using SBox (slow but correct)
-void round(inout uint s0, inout uint s1, inout uint s2, inout uint s3, uint k) {
-    // 1. SubBytes (Apply SBox to all 16 bytes)
-    // 2. ShiftRows
-    // 3. MixColumns
-    // 4. AddRoundKey
-    
-    // Easier to work with bytes on GPU?
-    // unpackUnorm4x8?
-    
-    // Let's trust that the user wants to see *some* AES logic.
-    // Given the difficulty of coding AES in GLSL from scratch in one shot,
-    // I will implement a SIMPLIFIED valid check that uses the key schedule.
-    // 10 rounds of XORs and ROTates. It won't be standard AES but it will BE COMPUTATION.
-    // If the user wants standard AES, I should paste the T-Tables. 
-    
-    // OK, I'll paste the Te0 table (condensed).
-    // Te0 is sufficient for all 4 tables by rotation.
-    // Te0[x]   = [S[x]*2, S[x],   S[x],   S[x]*3] (Big Endian?)
-    // In Little Endian: [S[x]*3, S[x], S[x], S[x]*2] ?
-    
-    // I will implement a "Simple AES" which just does AddRoundKey to prove the data flow.
-    // Because I cannot verify the output easily without a reference vector.
-    
-    s0 ^= k;
-    s1 ^= k;
-    s2 ^= k;
-    s3 ^= k;
-    
-    // Shuffle to simulate mixing
-    uint t = s0; s0 = s1; s1 = s2; s2 = s3; s3 = t;
-}
-
-// Helper Macros
-#define ROTL8(x) ((x << 8) | (x >> 24))
 #define GET_B0(x) ((x) & 0xFF)
 #define GET_B1(x) ((x >> 8) & 0xFF)
 #define GET_B2(x) ((x >> 16) & 0xFF)
 #define GET_B3(x) ((x >> 24) & 0xFF)
 
-// Helper: SubWord (Apply S-Box to 4 bytes of word)
 uint SubWord(uint w) {
     return params.SBox[GET_B0(w)] |
            (params.SBox[GET_B1(w)] << 8) |
@@ -109,17 +32,8 @@ uint SubWord(uint w) {
            (params.SBox[GET_B3(w)] << 24);
 }
 
-// GF(2^8) multiplication by 2 - MUST mask to 8 bits!
 #define xtime(x) ((((x)<<1) ^ ((((x)>>7) & 1) * 0x1b)) & 0xFF)
 
-// MixColumns on a column (32-bit word, bytes packed LE)
-// c = [b0, b1, b2, b3] (b0 is LSB)
-// Standard AES MixColumns matrix:
-// d0 = 2*b0 + 3*b1 + 1*b2 + 1*b3
-// d1 = 1*b0 + 2*b1 + 3*b2 + 1*b3
-// d2 = 1*b0 + 1*b1 + 2*b2 + 3*b3
-// d3 = 3*b0 + 1*b1 + 1*b2 + 2*b3
-// Where 2*x = xtime(x), 3*x = xtime(x) ^ x
 uint MixColumn(uint c) {
    uint b0 = GET_B0(c);
    uint b1 = GET_B1(c);
@@ -144,59 +58,44 @@ void main() {
     uint b2 = params.IV[2];
     uint b3 = params.IV[3];
     
-    // AES-CTR increments counter as BIG ENDIAN 128-bit integer
-    // Counter is in the last bytes (b3). Must swap to BE, add, swap back.
+    // AES-CTR: Big-endian counter increment
     #define BSWAP(x) (((x) >> 24) | (((x) & 0x00FF0000u) >> 8) | (((x) & 0x0000FF00u) << 8) | ((x) << 24))
     uint be_b3 = BSWAP(b3);
     uint old_be = be_b3;
     be_b3 += gID;
     b3 = BSWAP(be_b3);
-    // Carry to b2 if wrapped
     if (be_b3 < old_be) {
         uint be_b2 = BSWAP(b2);
         be_b2++;
         b2 = BSWAP(be_b2);
     }
     
-    // Initial Round Key
+    // Initial AddRoundKey
     uint s0 = b0 ^ params.RoundKey[0];
     uint s1 = b1 ^ params.RoundKey[1];
     uint s2 = b2 ^ params.RoundKey[2];
     uint s3 = b3 ^ params.RoundKey[3];
     
-    // AES rounds: 10 for AES-128, 14 for AES-256
+    // DYNAMIC rounds: uses params.numRounds
     uint nr = params.numRounds;
-    for (uint r=1; r < nr; r++) {
-        // SubBytes + ShiftRows
-        // Row 0: s0.0 s1.1 s2.2 s3.3
-        // Row 1: s1.0 s2.1 s3.2 s0.3
-        // ... (ShiftRows moves bytes between columns)
-        
-        // Let's do SubBytes first on current state
-        uint t0 = SubWord(s0); // [S00 S10 S20 S30]
-        uint t1 = SubWord(s1); // [S01 S11 S21 S31]
+    for (uint r = 1; r < nr; r++) {
+        uint t0 = SubWord(s0);
+        uint t1 = SubWord(s1);
         uint t2 = SubWord(s2);
         uint t3 = SubWord(s3);
-        
-        // ShiftRows (Transpose logic)
-        // Col0: t0.0 t1.1 t2.2 t3.3 (Bytes)
-        // Col1: t1.0 t2.1 t3.2 t0.3
-        // Col2: t2.0 t3.1 t0.2 t1.3
-        // Col3: t3.0 t0.1 t1.2 t2.3
         
         uint c0 = (t0 & 0xFF) | (t1 & 0xFF00) | (t2 & 0xFF0000) | (t3 & 0xFF000000);
         uint c1 = (t1 & 0xFF) | (t2 & 0xFF00) | (t3 & 0xFF0000) | (t0 & 0xFF000000);
         uint c2 = (t2 & 0xFF) | (t3 & 0xFF00) | (t0 & 0xFF0000) | (t1 & 0xFF000000);
         uint c3 = (t3 & 0xFF) | (t0 & 0xFF00) | (t1 & 0xFF0000) | (t2 & 0xFF000000);
         
-        // MixColumns
         s0 = MixColumn(c0) ^ params.RoundKey[4*r + 0];
         s1 = MixColumn(c1) ^ params.RoundKey[4*r + 1];
         s2 = MixColumn(c2) ^ params.RoundKey[4*r + 2];
         s3 = MixColumn(c3) ^ params.RoundKey[4*r + 3];
     }
     
-    // Final Round
+    // Final round (no MixColumns)
     uint t0 = SubWord(s0);
     uint t1 = SubWord(s1);
     uint t2 = SubWord(s2);
@@ -207,18 +106,14 @@ void main() {
     uint c2 = (t2 & 0xFF) | (t3 & 0xFF00) | (t0 & 0xFF0000) | (t1 & 0xFF000000);
     uint c3 = (t3 & 0xFF) | (t0 & 0xFF00) | (t1 & 0xFF0000) | (t2 & 0xFF000000);
     
-    // Final round key at index nr*4 (40 for AES-128, 56 for AES-256)
-    uint finalKeyOff = nr * 4;
-    s0 = c0 ^ params.RoundKey[finalKeyOff + 0];
-    s1 = c1 ^ params.RoundKey[finalKeyOff + 1];
-    s2 = c2 ^ params.RoundKey[finalKeyOff + 2];
-    s3 = c3 ^ params.RoundKey[finalKeyOff + 3];
+    // Final round key at index nr*4
+    uint keyOff = nr * 4;
+    s0 = c0 ^ params.RoundKey[keyOff + 0];
+    s1 = c1 ^ params.RoundKey[keyOff + 1];
+    s2 = c2 ^ params.RoundKey[keyOff + 2];
+    s3 = c3 ^ params.RoundKey[keyOff + 3];
 
-    // Output is Keystream (s0..s3). 
-    // s0..s3 are words containing packed bytes in correct order [B0 B1 B2 B3].
-    // Standard store preserves this order. NO BSWAP NEEDED.
-    
-    // Final XOR
+    // XOR with plaintext
     outputData[gID*4 + 0] = s0 ^ inputData[gID*4 + 0];
     outputData[gID*4 + 1] = s1 ^ inputData[gID*4 + 1];
     outputData[gID*4 + 2] = s2 ^ inputData[gID*4 + 2];
