@@ -27,7 +27,8 @@ RUN mkdir build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
     cp libvc6_crypto.so /usr/local/lib/ && \
-    cp aes_ctr.spv /usr/local/lib/ && \
+    cp aes128_ctr.spv /usr/local/lib/ && \
+    cp aes256_ctr.spv /usr/local/lib/ && \
     cp chacha20.spv /usr/local/lib/ && \
     cp rc4.spv /usr/local/lib/
 

@@ -23,15 +23,26 @@ else()
     set(GLSLC_CMD ${GLSLC} -O)
 endif()
 
-# Compile Shader
-set(SHADER_SOURCE_AES "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/aes_ctr.comp")
-set(SHADER_BINARY_AES "${CMAKE_CURRENT_BINARY_DIR}/aes_ctr.spv")
+# Compile AES-128 Shader
+set(SHADER_SOURCE_AES128 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/aes128_ctr.comp")
+set(SHADER_BINARY_AES128 "${CMAKE_CURRENT_BINARY_DIR}/aes128_ctr.spv")
 
 add_custom_command(
-    OUTPUT ${SHADER_BINARY_AES}
-    COMMAND ${GLSLC_CMD} ${SHADER_SOURCE_AES} -o ${SHADER_BINARY_AES}
-    DEPENDS ${SHADER_SOURCE_AES}
-    COMMENT "Compiling AES GLSL shader"
+    OUTPUT ${SHADER_BINARY_AES128}
+    COMMAND ${GLSLC_CMD} ${SHADER_SOURCE_AES128} -o ${SHADER_BINARY_AES128}
+    DEPENDS ${SHADER_SOURCE_AES128}
+    COMMENT "Compiling AES-128 GLSL shader"
+)
+
+# Compile AES-256 Shader
+set(SHADER_SOURCE_AES256 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/aes256_ctr.comp")
+set(SHADER_BINARY_AES256 "${CMAKE_CURRENT_BINARY_DIR}/aes256_ctr.spv")
+
+add_custom_command(
+    OUTPUT ${SHADER_BINARY_AES256}
+    COMMAND ${GLSLC_CMD} ${SHADER_SOURCE_AES256} -o ${SHADER_BINARY_AES256}
+    DEPENDS ${SHADER_SOURCE_AES256}
+    COMMENT "Compiling AES-256 GLSL shader"
 )
 
 set(SHADER_SOURCE_CHACHA "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/chacha20.comp")
@@ -61,7 +72,8 @@ add_library(vc6_crypto SHARED
     src/backend/vulkan_ctx.cpp
     src/backend/memory.cpp
     src/scheduler/batcher.cpp
-    ${SHADER_BINARY_AES}
+    ${SHADER_BINARY_AES128}
+    ${SHADER_BINARY_AES256}
     ${SHADER_BINARY_CHACHA}
     ${SHADER_BINARY_RC4}
 )

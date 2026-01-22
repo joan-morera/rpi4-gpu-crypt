@@ -1,0 +1,131 @@
+#version 450
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer InputBuffer {
+    uint inputData[];
+};
+
+layout(std430, binding = 1) writeonly buffer OutputBuffer {
+    uint outputData[];
+};
+
+// Params UBO (Extended Layout - Same as AES-256)
+layout(std430, binding = 2) readonly buffer Params {
+    uint batchSize;
+    uint numRounds;     // Ignored/10
+    uint padding[2];
+    uint RoundKey[60];  // 60 uints allocated to match AES-256 layout
+    uint IV[4];         // 4 uints = 16 bytes at offset 256
+    uint SBox[256];     // 256 uints at offset 272
+} params;
+
+// Macros to extract bytes
+#define GETBYTE(w, n) ((w >> (n*8)) & 0xFF)
+#define GET_B0(x) ((x) & 0xFF)
+#define GET_B1(x) ((x >> 8) & 0xFF)
+#define GET_B2(x) ((x >> 16) & 0xFF)
+#define GET_B3(x) ((x >> 24) & 0xFF)
+#define ROTL8(x) ((x << 8) | (x >> 24))
+
+// Helper: SubWord (Apply S-Box to 4 bytes of word)
+uint SubWord(uint w) {
+    return params.SBox[GET_B0(w)] |
+           (params.SBox[GET_B1(w)] << 8) |
+           (params.SBox[GET_B2(w)] << 16) |
+           (params.SBox[GET_B3(w)] << 24);
+}
+
+// GF(2^8) multiplication by 2 - MUST mask to 8 bits!
+#define xtime(x) ((((x)<<1) ^ ((((x)>>7) & 1) * 0x1b)) & 0xFF)
+
+// MixColumns on a column
+uint MixColumn(uint c) {
+   uint b0 = GET_B0(c);
+   uint b1 = GET_B1(c);
+   uint b2 = GET_B2(c);
+   uint b3 = GET_B3(c);
+   
+   uint d0 = xtime(b0) ^ (xtime(b1) ^ b1) ^ b2 ^ b3;
+   uint d1 = b0 ^ xtime(b1) ^ (xtime(b2) ^ b2) ^ b3;
+   uint d2 = b0 ^ b1 ^ xtime(b2) ^ (xtime(b3) ^ b3);
+   uint d3 = (xtime(b0) ^ b0) ^ b1 ^ b2 ^ xtime(b3);
+   
+   return d0 | (d1<<8) | (d2<<16) | (d3<<24);
+}
+
+void main() {
+    uint gID = gl_GlobalInvocationID.x;
+    if (gID >= params.batchSize) return;
+
+    // Load IV + Counter
+    uint b0 = params.IV[0];
+    uint b1 = params.IV[1];
+    uint b2 = params.IV[2];
+    uint b3 = params.IV[3];
+    
+    // AES-CTR increments counter as BIG ENDIAN 128-bit integer
+    #define BSWAP(x) (((x) >> 24) | (((x) & 0x00FF0000u) >> 8) | (((x) & 0x0000FF00u) << 8) | ((x) << 24))
+    uint be_b3 = BSWAP(b3);
+    uint old_be = be_b3;
+    be_b3 += gID;
+    b3 = BSWAP(be_b3);
+    // Carry to b2 if wrapped
+    if (be_b3 < old_be) {
+        uint be_b2 = BSWAP(b2);
+        be_b2++;
+        b2 = BSWAP(be_b2);
+    }
+    
+    // Initial Round Key
+    uint s0 = b0 ^ params.RoundKey[0];
+    uint s1 = b1 ^ params.RoundKey[1];
+    uint s2 = b2 ^ params.RoundKey[2];
+    uint s3 = b3 ^ params.RoundKey[3];
+    
+    // AES-128: Hardcode 10 rounds
+    const uint nr = 10;
+    
+    for (uint r=1; r < nr; r++) {
+        // SubBytes
+        uint t0 = SubWord(s0); 
+        uint t1 = SubWord(s1);
+        uint t2 = SubWord(s2);
+        uint t3 = SubWord(s3);
+        
+        // ShiftRows
+        uint c0 = (t0 & 0xFF) | (t1 & 0xFF00) | (t2 & 0xFF0000) | (t3 & 0xFF000000);
+        uint c1 = (t1 & 0xFF) | (t2 & 0xFF00) | (t3 & 0xFF0000) | (t0 & 0xFF000000);
+        uint c2 = (t2 & 0xFF) | (t3 & 0xFF00) | (t0 & 0xFF0000) | (t1 & 0xFF000000);
+        uint c3 = (t3 & 0xFF) | (t0 & 0xFF00) | (t1 & 0xFF0000) | (t2 & 0xFF000000);
+        
+        // MixColumns
+        s0 = MixColumn(c0) ^ params.RoundKey[4*r + 0];
+        s1 = MixColumn(c1) ^ params.RoundKey[4*r + 1];
+        s2 = MixColumn(c2) ^ params.RoundKey[4*r + 2];
+        s3 = MixColumn(c3) ^ params.RoundKey[4*r + 3];
+    }
+    
+    // Final Round
+    uint t0 = SubWord(s0);
+    uint t1 = SubWord(s1);
+    uint t2 = SubWord(s2);
+    uint t3 = SubWord(s3);
+    
+    uint c0 = (t0 & 0xFF) | (t1 & 0xFF00) | (t2 & 0xFF0000) | (t3 & 0xFF000000);
+    uint c1 = (t1 & 0xFF) | (t2 & 0xFF00) | (t3 & 0xFF0000) | (t0 & 0xFF000000);
+    uint c2 = (t2 & 0xFF) | (t3 & 0xFF00) | (t0 & 0xFF0000) | (t1 & 0xFF000000);
+    uint c3 = (t3 & 0xFF) | (t0 & 0xFF00) | (t1 & 0xFF0000) | (t2 & 0xFF000000);
+    
+    // Final round key at index nr*4 (40 for AES-128)
+    uint finalKeyOff = nr * 4;
+    s0 = c0 ^ params.RoundKey[finalKeyOff + 0];
+    s1 = c1 ^ params.RoundKey[finalKeyOff + 1];
+    s2 = c2 ^ params.RoundKey[finalKeyOff + 2];
+    s3 = c3 ^ params.RoundKey[finalKeyOff + 3];
+
+    // Final XOR
+    outputData[gID*4 + 0] = s0 ^ inputData[gID*4 + 0];
+    outputData[gID*4 + 1] = s1 ^ inputData[gID*4 + 1];
+    outputData[gID*4 + 2] = s2 ^ inputData[gID*4 + 2];
+    outputData[gID*4 + 3] = s3 ^ inputData[gID*4 + 3];
+}
