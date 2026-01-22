@@ -5,24 +5,29 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Vulkan REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 include_directories(include)
 include_directories(src)
+include_directories(${OPENSSL_INCLUDE_DIR})
 
-file(GLOB_RECURSE SOURCES 
+file(GLOB_RECURSE LIB_SOURCES 
     "src/backend/*.cpp"
     "src/scheduler/*.cpp"
     "src/lib/*.cpp"
 )
 
-# Build as a shared library
-add_library(aes256_gpu SHARED ${SOURCES})
+# 1. Build the shared library (internal C++ logic)
+add_library(aes256_gpu SHARED ${LIB_SOURCES})
 target_link_libraries(aes256_gpu Vulkan::Vulkan)
 
-# Compile shader rule (Optional, if user wants to build shaders)
+# 2. Build the OpenSSL Provider Module (loadable .so)
+add_library(aes256_gpu_provider MODULE src/provider/aes256_provider.c)
+target_link_libraries(aes256_gpu_provider aes256_gpu OpenSSL::Crypto)
+
+# Compile shader rule
 find_program(GLSLC_EXECUTABLE glslc)
 if(GLSLC_EXECUTABLE)
-    # Ensure output directory exists
     file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR})
     
     add_custom_command(
@@ -33,9 +38,10 @@ if(GLSLC_EXECUTABLE)
     )
     add_custom_target(shaders ALL DEPENDS ${CMAKE_BINARY_DIR}/aes256_ctr.spv)
     
-    # Installation instruction: Copy shader to /usr/local/lib/
     install(FILES ${CMAKE_BINARY_DIR}/aes256_ctr.spv DESTINATION /usr/local/lib)
 endif()
 
+# Installation
 install(TARGETS aes256_gpu DESTINATION /usr/local/lib)
+install(TARGETS aes256_gpu_provider DESTINATION /usr/local/lib/ossl-modules)
 install(FILES include/aes256_gpu.h DESTINATION /usr/local/include)

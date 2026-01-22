@@ -171,7 +171,7 @@ bool AES256Batcher::submit(const unsigned char *in, unsigned char *out,
     return false;
   }
 
-  vkWaitForFences(ctx->getDevice(), 1, &computeFence, UINT64_MAX, UINT64_MAX);
+  vkWaitForFences(ctx->getDevice(), 1, &computeFence, VK_TRUE, UINT64_MAX);
 
   // 4. Copy output
   memcpy(out, outputRing.mappedUrl, len);
